@@ -15,6 +15,8 @@ def save_json(path, data): json.dump(data, open(path, "w"), indent=4)
 active_users = {}    # {username: conn}
 user_roles = {}      # {username: role}
 muted_users = {}     # {username: unmute_time (epoch)}
+banned_users = {}    # {username: unban_time}
+BAN_DURATION = 10 * 60  # 10 minutes in seconds
 
 # ---------- SETUP ----------
 def setup_server():
@@ -82,6 +84,17 @@ def handle_client(conn, addr):
 
             elif msg.upper().startswith("LOGIN "):
                 _, user, pw = msg.split(" ", 2)
+
+                # --- 🔒 Temporary ban check ---
+                if user in banned_users:
+                    if time.time() < banned_users[user]:
+                        remaining = int((banned_users[user] - time.time()) // 60) + 1
+                        conn.send(f"🚫 You are temporarily banned. Try again in {remaining} minute(s).\n".encode("utf-8"))
+                        conn.close()
+                        return
+                    else:
+                        banned_users.pop(user, None)  # ban expired, allow login
+
                 users = load_json(USERS_PATH, {})
                 if user not in users or users[user]["password"] != hash_pw(pw):
                     conn.send(b"Invalid credentials or user not approved.\n")
@@ -161,28 +174,44 @@ def handle_client(conn, addr):
                     conn.send(f"{prefix}to {target}: {pm}\n".encode())
                 continue
 
-            elif role == "admin" and text.startswith("/kick "):
-                target = text.split(" ", 1)[1]
+            # --- Admin: Kick (adds temporary ban) ---
+            elif text.startswith("/kick "):
+                if role != "admin":
+                    conn.send("🚫 Permission denied.\n".encode("utf-8"))
+                    continue
+                parts = text.split(" ", 2)
+                if len(parts) < 2:
+                    conn.send(b"Usage: /kick <username> [reason]\n")
+                    continue
+                target = parts[1]
+                reason = parts[2] if len(parts) > 2 else "No reason given"
                 if target not in active_users:
                     conn.send(b"User not found or offline.\n")
-                else:
-                    try:
-                        active_users[target].send("⚠️ You have been kicked by an admin.\n".encode("utf-8"))
-                        active_users[target].close()
-                    except:
-                        pass
-                    active_users.pop(target, None)
-                    broadcast(f"🚨 {target} was kicked by an admin.\n")
-                    print(f"[Admin Action] {username} kicked {target}")
+                    continue
+                try:
+                    active_users[target].send(f"⚠️ You have been kicked by an admin. Reason: {reason}\n".encode("utf-8"))
+                    active_users[target].close()
+                except:
+                    pass
+                active_users.pop(target, None)
+                user_roles.pop(target, None)
+                banned_users[target] = time.time() + BAN_DURATION
+                broadcast(f"🚨 {target} was kicked and temporarily banned (10 min) by an admin. (Reason: {reason})\n")
+                conn.send(f"✅ {target} has been kicked and banned for 10 minutes.\n".encode("utf-8"))
+                print(f"[Admin Action] {username} kicked {target} (Reason: {reason})")
                 continue
 
-            elif role == "admin" and text.startswith("/mute "):
+             # --- Admin: Mute ---
+            elif text.startswith("/mute "):
+                if role != "admin":
+                    conn.send("🚫 Permission denied.\n".encode("utf-8"))
+                    continue
                 parts = text.split()
                 if len(parts) < 2:
                     conn.send(b"Usage: /mute <user> <minutes>\n")
                     continue
                 target = parts[1]
-                duration = int(parts[2]) if len(parts) > 2 else 5
+                duration = int(parts[2]) if len(parts) > 2 else 2
                 if target not in active_users:
                     conn.send(b"User not found or offline.\n")
                 else:
@@ -190,6 +219,45 @@ def handle_client(conn, addr):
                     active_users[target].send(f"🔇 You have been muted for {duration} minute(s).\n".encode())
                     broadcast(f"🔇 {target} was muted by an admin for {duration} minute(s).\n")
                     print(f"[Admin Action] {username} muted {target} for {duration}m")
+                continue
+
+            # --- Admin: Unmute ---
+            elif text.startswith("/unmute "):
+                if role != "admin":
+                    conn.send("🚫 Permission denied.\n".encode("utf-8"))
+                    continue
+                parts = text.split()
+                if len(parts) < 2:
+                    conn.send(b"Usage: /unmute <user>\n".encode())
+                    continue
+                target = parts[1]
+                if target in muted_users:
+                    muted_users.pop(target, None)
+                    conn.send(f"✅ {target} has been unmuted.\n".encode())
+                    if target in active_users:
+                        active_users[target].send("🔊 You have been unmuted by an admin.\n".encode("utf-8"))
+                    broadcast(f"🔊 {target} was unmuted by an admin.\n")
+                    print(f"[Admin Action] {username} unmuted {target}")
+                else:
+                    conn.send("User is not muted.\n".encode())
+                continue
+
+             # --- Admin: Unban ---
+            elif text.startswith("/unban "):
+                if role != "admin":
+                    conn.send("🚫 Permission denied.\n".encode("utf-8"))
+                    continue
+                parts = text.split()
+                if len(parts) < 2:
+                    conn.send("Usage: /unban <user>\n".encode())
+                    continue
+                target = parts[1]
+                if target in banned_users:
+                    banned_users.pop(target, None)
+                    conn.send(f"✅ {target} has been unbanned.\n".encode())
+                    print(f"[Admin Action] {username} unbanned {target}")
+                else:
+                    conn.send("User is not banned.\n".encode())
                 continue
 
             else:
