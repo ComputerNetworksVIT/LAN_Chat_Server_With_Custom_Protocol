@@ -1,41 +1,28 @@
 import socket, threading
 
-def listen(sock):
-    """Receive messages from server continuously."""
+def recv_msgs(sock):
     while True:
         try:
-            data = sock.recv(1024).decode()
-            if not data: break
-            print(data, end="")
+            msg = sock.recv(1024)
+            if not msg:
+                break
+            print(msg.decode(), end="")
         except:
             break
 
 def main():
     print("=== LAN Chat Client ===")
-    host = input("Server IP [127.0.0.1]: ") or "127.0.0.1"
+    ip = input("Server IP [127.0.0.1]: ") or "127.0.0.1"
     port = int(input("Port [5555]: ") or "5555")
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.connect((host, port))
+    sock.connect((ip, port))
     print("✅ Connected to server.")
-    print(sock.recv(1024).decode(), end="")
+    threading.Thread(target=recv_msgs, args=(sock,), daemon=True).start()
 
-    # signup or login loop
     while True:
-        cmd = input("> ").strip()
-        sock.send((cmd + "\n").encode())
-        resp = sock.recv(1024).decode()
-        print(resp, end="")
-        if resp.startswith("✅ Welcome"): break
-
-    # start listener thread
-    threading.Thread(target=listen, args=(sock,), daemon=True).start()
-
-    print("Type messages to chat. Type EXIT to quit.\n")
-    while True:
-        msg = input()
-        if msg.strip().upper() == "EXIT":
-            sock.send(b"EXIT\n")
+        msg = input("> ")
+        if msg.lower() == "exit":
             break
         sock.send((msg + "\n").encode())
 
