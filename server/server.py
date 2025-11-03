@@ -131,3 +131,9 @@ def run_server(port):
     finally:
         server.close()
         print("✅ Server closed cleanly.")
+
+if __name__ == "__main__":
+    setup_server()
+    config = json.load(open(CONFIG_PATH))
+    admin_login()
+    run_server(config["port"])
