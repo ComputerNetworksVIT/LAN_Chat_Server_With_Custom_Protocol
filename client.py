@@ -1,67 +1,46 @@
-import socket
-import threading
-import sys
+import socket, threading
 
-SERVER_IP = "127.0.0.1"  # change if server is remote
-SERVER_PORT = 5555       # must match server_config.json
-
-def receive_messages(sock):
+def listen(sock):
+    """Receive messages from server continuously."""
     while True:
         try:
             data = sock.recv(1024).decode()
-            if not data:
-                print("\n[Disconnected from server]")
-                break
-            print("\n" + data.strip())
-            print("> ", end="", flush=True)
+            if not data: break
+            print(data, end="")
         except:
             break
 
 def main():
     print("=== LAN Chat Client ===")
-    ip = input(f"Server IP [{SERVER_IP}]: ").strip() or SERVER_IP
-    port_in = input(f"Port [{SERVER_PORT}]: ").strip()
-    port = int(port_in) if port_in else SERVER_PORT
+    host = input("Server IP [127.0.0.1]: ") or "127.0.0.1"
+    port = int(input("Port [5555]: ") or "5555")
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    try:
-        sock.connect((ip, port))
-    except Exception as e:
-        print("❌ Connection failed:", e)
-        return
-
+    sock.connect((host, port))
     print("✅ Connected to server.")
-    print(sock.recv(1024).decode())  # welcome message
+    print(sock.recv(1024).decode(), end="")
 
-    # login/signup phase
+    # signup or login loop
     while True:
         cmd = input("> ").strip()
         sock.send((cmd + "\n").encode())
         resp = sock.recv(1024).decode()
-        print(resp.strip())
-        if "Welcome," in resp or "Login successful" in resp:
+        print(resp, end="")
+        if resp.startswith("✅ Welcome"): break
+
+    # start listener thread
+    threading.Thread(target=listen, args=(sock,), daemon=True).start()
+
+    print("Type messages to chat. Type EXIT to quit.\n")
+    while True:
+        msg = input()
+        if msg.strip().upper() == "EXIT":
+            sock.send(b"EXIT\n")
             break
-        if "Goodbye" in resp or not resp:
-            sock.close()
-            return
+        sock.send((msg + "\n").encode())
 
-    # start receiving thread
-    threading.Thread(target=receive_messages, args=(sock,), daemon=True).start()
-
-    # main chat loop
-    try:
-        while True:
-            msg = input("> ").strip()
-            if not msg:
-                continue
-            sock.send((msg + "\n").encode())
-            if msg.lower() == "/exit":
-                break
-    except KeyboardInterrupt:
-        pass
-    finally:
-        print("\n👋 Disconnected.")
-        sock.close()
+    sock.close()
+    print("Disconnected.")
 
 if __name__ == "__main__":
     main()
