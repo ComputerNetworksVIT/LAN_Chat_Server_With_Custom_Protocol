@@ -13,6 +13,7 @@ def save_json(path, data): json.dump(data, open(path, "w"), indent=4)
 
 # ---------- GLOBALS ----------
 active_users = {}   # {username: conn}
+user_roles = {}     # {username: role}
 
 # ---------- SETUP ----------
 def setup_server():
@@ -57,6 +58,7 @@ def handle_client(conn, addr):
     conn.send(b"Welcome to the LAN Chat Server.\nType SIGNUP or LOGIN\n")
 
     username = None
+    role = "user"
 
     try:
         while True:
@@ -66,11 +68,7 @@ def handle_client(conn, addr):
             msg = data.decode().strip()
 
             if msg.upper().startswith("SIGNUP "):
-                parts = msg.split(" ", 2)
-                if len(parts) < 3:
-                    conn.send(b"Usage: SIGNUP <username> <password>\n")
-                    continue
-                _, user, pw = parts
+                _, user, pw = msg.split(" ", 2)
                 if user in users:
                     conn.send(b"Username already exists.\n")
                 elif user in pending:
@@ -79,21 +77,23 @@ def handle_client(conn, addr):
                     pending[user] = {"password": hash_pw(pw)}
                     save_json(PENDING_PATH, pending)
                     conn.send(b"Signup submitted. Wait for admin approval, then try LOGIN.\n")
-                continue  # stay connected
+                continue
 
             elif msg.upper().startswith("LOGIN "):
                 _, user, pw = msg.split(" ", 2)
-                users = load_json(USERS_PATH, {})  # reload (in case admin just approved)
+                users = load_json(USERS_PATH, {})
                 if user not in users or users[user]["password"] != hash_pw(pw):
                     conn.send(b"Invalid credentials or user not approved.\n")
                 elif user in active_users:
                     conn.send(b"User already logged in elsewhere.\n")
-                    continue
                 else:
                     username = user
+                    role = users[user]["role"]
                     active_users[user] = conn
-                    conn.send(f"✅ Logged in as {user}. You can now chat.\n".encode())
-                    broadcast(f"📢 {user} joined the chat.\n", conn)
+                    user_roles[user] = role
+                    tag = "[Admin] " if role == "admin" else ""
+                    conn.send(f"✅ Logged in as {tag}{user}. You can now chat.\n".encode())
+                    broadcast(f"📢 {tag}{user} joined the chat.\n", conn)
                     break
             else:
                 conn.send(b"Unknown command. Use SIGNUP or LOGIN.\n")
@@ -112,14 +112,52 @@ def handle_client(conn, addr):
             if not msg:
                 break
             text = msg.decode().strip()
-            broadcast(f"{username}: {text}\n", conn)
+
+            # --- Command handling ---
+            if text == "/help":
+                help_text = (
+                    "\nAvailable commands:\n"
+                    "  /help - show this message\n"
+                    "  /users - list online users\n"
+                    "  @username <msg> - private message\n"
+                    "  exit - disconnect\n\n"
+                )
+                conn.send(help_text.encode())
+                continue
+
+            elif text == "/users":
+                users_list = ", ".join(active_users.keys()) or "(none)"
+                conn.send(f"Online users: {users_list}\n".encode())
+                continue
+
+            elif text.startswith("@"):
+                parts = text.split(" ", 1)
+                if len(parts) < 2:
+                    conn.send(b"Usage: @username <message>\n")
+                    continue
+                target, pm = parts
+                target = target[1:]
+                if target not in active_users:
+                    conn.send(b"User not found.\n")
+                else:
+                    prefix = "[PM] "
+                    tag = "[Admin] " if role == "admin" else ""
+                    active_users[target].send(f"{prefix}{tag}{username}: {pm}\n".encode())
+                    conn.send(f"{prefix}to {target}: {pm}\n".encode())
+                continue
+
+            else:
+                tag = "[Admin] " if role == "admin" else ""
+                broadcast(f"{tag}{username}: {text}\n", conn)
     except:
         pass
     finally:
         conn.close()
         if username:
             active_users.pop(username, None)
-            broadcast(f"📤 {username} left the chat.\n", conn)
+            user_roles.pop(username, None)
+            tag = "[Admin] " if role == "admin" else ""
+            broadcast(f"📤 {tag}{username} left the chat.\n", conn)
 
 # ---------- SERVER ----------
 def run_server(port):
@@ -128,18 +166,19 @@ def run_server(port):
     server.listen(5)
     server.settimeout(1.0)
     print(f"🚀 Server running on port {port}. Ctrl+C to stop.")
-    print("💻 Admin commands: list_pending | approve <u> | reject <u> | exit\n")
+    print("💻 Admin commands: list_pending | approve <u> | reject <u> | announce <msg> | exit\n")
 
-    # --- admin console thread ---
     def admin_console():
         while True:
             cmd = input("admin> ").strip()
             if cmd == "list_pending":
                 pending = load_json(PENDING_PATH, {})
-                if not pending: print("No pending signups.")
+                if not pending:
+                    print("No pending signups.")
                 else:
                     print("Pending signups:")
-                    for u in pending: print("  -", u)
+                    for u in pending:
+                        print("  -", u)
             elif cmd.startswith("approve "):
                 u = cmd.split(" ", 1)[1]
                 users = load_json(USERS_PATH, {})
@@ -150,16 +189,26 @@ def run_server(port):
                     save_json(USERS_PATH, users)
                     save_json(PENDING_PATH, pending)
                     print(f"✅ Approved {u}.")
-                else: print("No such pending user.")
+                else:
+                    print("No such pending user.")
             elif cmd.startswith("reject "):
                 u = cmd.split(" ", 1)[1]
                 pending = load_json(PENDING_PATH, {})
                 if u in pending:
-                    del pending[u]; save_json(PENDING_PATH, pending)
+                    del pending[u]
+                    save_json(PENDING_PATH, pending)
                     print(f"❌ Rejected {u}.")
-                else: print("No such pending user.")
-            elif cmd == "exit": os._exit(0)
-            else: print("Unknown command.")
+                else:
+                    print("No such pending user.")
+            elif cmd.startswith("announce "):
+                msg = cmd.split(" ", 1)[1]
+                announcement = f"[Server Announcement] {msg}\n"
+                print(announcement.strip())
+                broadcast(announcement)
+            elif cmd == "exit":
+                os._exit(0)
+            else:
+                print("Unknown command.")
 
     threading.Thread(target=admin_console, daemon=True).start()
 
@@ -168,7 +217,7 @@ def run_server(port):
             try:
                 conn, addr = server.accept()
                 threading.Thread(target=handle_client, args=(conn, addr), daemon=True).start()
-            except socket.timeout: 
+            except socket.timeout:
                 continue
     except KeyboardInterrupt:
         print("\n🛑 Server shutting down...")
