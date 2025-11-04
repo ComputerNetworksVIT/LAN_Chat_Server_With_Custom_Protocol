@@ -1,4 +1,5 @@
 import socket, threading, json, os, hashlib, time
+from datetime import datetime
 
 # ---------- LANTP HELPERS ----------
 def encode_lantp(data):
@@ -26,11 +27,22 @@ DATA_DIR = "server_data"
 CONFIG_PATH = os.path.join(DATA_DIR, "server_config.json")
 USERS_PATH = os.path.join(DATA_DIR, "users.json")
 PENDING_PATH = os.path.join(DATA_DIR, "pending.json")
+LOG_DIR = "logs"
+os.makedirs(LOG_DIR, exist_ok=True)
 
 # ---------- HELPERS ----------
 def hash_pw(pw): return hashlib.sha256(pw.encode()).hexdigest()
 def load_json(path, default): return json.load(open(path)) if os.path.exists(path) else default
 def save_json(path, data): json.dump(data, open(path, "w"), indent=4)
+
+def log_event(message):
+    """Append timestamped messages to today's log file."""
+    date = datetime.now().strftime("%Y-%m-%d")
+    time_str = datetime.now().strftime("%H:%M:%S")
+    log_path = os.path.join(LOG_DIR, f"{date}.log")
+
+    with open(log_path, "a", encoding="utf-8") as f:
+        f.write(f"[{time_str}] {message}\n")
 
 # ---------- GLOBALS ----------
 active_users = {}    # {username: conn}
@@ -164,6 +176,7 @@ def handle_client(conn, addr):
                             "TYPE": "SYS", "FROM": "SERVER",
                             "CONTENT": f"📢 {tag}{user} joined the chat.\n"
                         }, conn)
+                        log_event(f"{user} ({role}) logged in from {addr[0]}:{addr[1]}")
                         break
                 else:
                     conn.send(encode_lantp({
@@ -273,6 +286,7 @@ def handle_client(conn, addr):
                         "TO": target,
                         "CONTENT": f"[PM] {tag}{username}: {pm}"
                     }).encode("utf-8"))
+                    log_event(f"[PM] {username} -> {target}: {pm}")
 
                     # confirmation back to sender
                     conn.send(encode_lantp({
@@ -331,6 +345,7 @@ def handle_client(conn, addr):
                         "CONTENT": f"✅ {target} has been kicked and banned for 10 minutes.\n"
                     }).encode("utf-8"))
                     print(f"[Admin Action] {username} kicked {target} (Reason: {reason})")
+                    log_event(f"[ADMIN] {username} kicked {target} (Reason: {reason})")
                     continue
 
                 # --- Admin: Mute ---
@@ -369,6 +384,8 @@ def handle_client(conn, addr):
                         "CONTENT": f"🔇 {target} was muted by an admin for {duration} minute(s)."
                     })
                     print(f"[Admin Action] {username} muted {target} for {duration}m")
+                    log_event(f"[ADMIN] {username} muted {target} for {duration}m")
+
                     continue
 
 
@@ -408,6 +425,7 @@ def handle_client(conn, addr):
                             "CONTENT": f"🔊 {target} was unmuted by an admin."
                         })
                         print(f"[Admin Action] {username} unmuted {target}")
+                        log_event(f"[ADMIN] {username} unmuted {target})")
                     else:
                         conn.send(encode_lantp({
                             "TYPE": "CMD_RESP", "FROM": "SERVER",
@@ -441,6 +459,8 @@ def handle_client(conn, addr):
                             "CONTENT": f"✅ {target} has been unbanned.\n"
                         }).encode("utf-8"))
                         print(f"[Admin Action] {username} unbanned {target}")
+                        log_event(f"[ADMIN] {username} unbanned {target}")
+
                     else:
                         conn.send(encode_lantp({
                             "TYPE": "CMD_RESP", "FROM": "SERVER",
@@ -498,9 +518,11 @@ def handle_client(conn, addr):
                     "TYPE": "MSG", "FROM": username,
                     "CONTENT": f"{tag}{username}: {text}"
                 }, conn)
+                log_event(f"{username}: {text}")
     except:
         pass
     finally:
+        log_event(f"{username} ({role}) disconnected")
         conn.close()
         if username:
             # Clean up user tracking
@@ -586,8 +608,9 @@ def run_server(port):
                     "FROM": "SERVER",
                     "CONTENT": f"[Server Announcement] {msg}"
                 })
-                print(f"📢 {msg}")
+                print(f"📢 Broadcasted announcement: {msg}")
                 broadcast(announcement)
+                log_event(f"[SERVER ANNOUNCEMENT] {msg}")   
 
             # --- Exit server ---
             elif cmd == "exit":
