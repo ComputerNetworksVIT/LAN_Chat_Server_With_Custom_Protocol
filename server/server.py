@@ -39,8 +39,7 @@ DATA_DIR = "server_data"
 CONFIG_PATH = os.path.join(DATA_DIR, "server_config.json")
 USERS_PATH = os.path.join(DATA_DIR, "users.json")
 PENDING_PATH = os.path.join(DATA_DIR, "pending.json")
-LOG_DIR = "logs"
-os.makedirs(LOG_DIR, exist_ok=True)
+LOG_DIR = os.path.join(DATA_DIR, "logs")
 
 # ---------- HELPERS ----------
 def hash_pw(pw): return hashlib.sha256(pw.encode()).hexdigest()
@@ -144,47 +143,49 @@ def handle_client(conn, addr):
                     continue
 
                 # ---------- LOGIN ----------
-                if user in banned_users:
-                    if time.time() < banned_users[user]:
-                        remaining = int((banned_users[user] - time.time()) // 60) + 1
-                        conn.send(encode_lantp({
-                            "TYPE": "SYS", "FROM": "SERVER",
-                            "CONTENT": f"🚫 You are temporarily banned. Try again in {remaining} minute(s).\n"
-                        }).encode("utf-8"))
-                        conn.close()
-                        return
-                    else:
-                        # ban expired -> remove and continue with auth
-                        banned_users.pop(user, None)
+                elif text.upper().startswith("LOGIN "):
+                    _, user, pw = text.split(" ", 2)
+                    if user in banned_users:
+                        if time.time() < banned_users[user]:
+                            remaining = int((banned_users[user] - time.time()) // 60) + 1
+                            conn.send(encode_lantp({
+                                "TYPE": "SYS", "FROM": "SERVER",
+                                "CONTENT": f"🚫 You are temporarily banned. Try again in {remaining} minute(s).\n"
+                            }).encode("utf-8"))
+                            conn.close()
+                            return
+                        else:
+                            # ban expired -> remove and continue with auth
+                            banned_users.pop(user, None)
 
-                    users = load_json(USERS_PATH, {})
-                    if user not in users or users[user]["password"] != hash_pw(pw):
-                        conn.send(encode_lantp({
-                            "TYPE": "AUTH_FAIL", "FROM": "SERVER",
-                            "CONTENT": "Invalid credentials or user not approved.\n"
-                        }).encode("utf-8"))
-                    elif user in active_users:
-                        conn.send(encode_lantp({
-                            "TYPE": "AUTH_FAIL", "FROM": "SERVER",
-                            "CONTENT": "User already logged in elsewhere.\n"
-                        }).encode("utf-8"))
-                    else:
-                        username, role = user, users[user]["role"]
-                        active_users[user] = conn
-                        user_roles[user] = role
-                        connected_since[user] = time.time()
-                        last_pong[user] = time.time()   # initialize heartbeat
-                        tag = "[Admin] " if role == "admin" else ""
-                        conn.send(encode_lantp({
-                            "TYPE": "AUTH_OK", "FROM": "SERVER",
-                            "CONTENT": f"✅ Logged in as {tag}{user}. You can now chat.\n"
-                        }).encode("utf-8"))
-                        broadcast({
-                            "TYPE": "SYS", "FROM": "SERVER",
-                            "CONTENT": f"📢 {tag}{user} joined the chat.\n"
-                        }, conn)
-                        log_event(f"{user} ({role}) logged in from {addr[0]}:{addr[1]}")
-                        break
+                        users = load_json(USERS_PATH, {})
+                        if user not in users or users[user]["password"] != hash_pw(pw):
+                            conn.send(encode_lantp({
+                                "TYPE": "AUTH_FAIL", "FROM": "SERVER",
+                                "CONTENT": "Invalid credentials or user not approved.\n"
+                            }).encode("utf-8"))
+                        elif user in active_users:
+                            conn.send(encode_lantp({
+                                "TYPE": "AUTH_FAIL", "FROM": "SERVER",
+                                "CONTENT": "User already logged in elsewhere.\n"
+                            }).encode("utf-8"))
+                        else:
+                            username, role = user, users[user]["role"]
+                            active_users[user] = conn
+                            user_roles[user] = role
+                            connected_since[user] = time.time()
+                            last_pong[user] = time.time()   # initialize heartbeat
+                            tag = "[Admin] " if role == "admin" else ""
+                            conn.send(encode_lantp({
+                                "TYPE": "AUTH_OK", "FROM": "SERVER",
+                                "CONTENT": f"✅ Logged in as {tag}{user}. You can now chat.\n"
+                            }).encode("utf-8"))
+                            broadcast({
+                                "TYPE": "SYS", "FROM": "SERVER",
+                                "CONTENT": f"📢 {tag}{user} joined the chat.\n"
+                            }, conn)
+                            log_event(f"{user} ({role}) logged in from {addr[0]}:{addr[1]}")
+                            break
                 else:
                     conn.send(encode_lantp({
                         "TYPE": "SYS", "FROM": "SERVER",
@@ -273,7 +274,7 @@ def handle_client(conn, addr):
                     conn.send(encode_lantp({
                         "TYPE": "CMD_RESP",
                         "FROM": "SERVER",
-                        "CONTENT": f"👥 Online users:\n  {users_list}\n"
+                        "CONTENT": f"👥 Online users:\n{users_list}\n"
                     }).encode("utf-8"))
                     continue
 
@@ -444,7 +445,7 @@ def handle_client(conn, addr):
                             "CONTENT": f"🔊 {target} was unmuted by an admin."
                         })
                         print(f"[Admin Action] {username} unmuted {target}")
-                        log_event(f"[ADMIN] {username} unmuted {target})")
+                        log_event(f"[ADMIN] {username} unmuted {target}")
                     else:
                         conn.send(encode_lantp({
                             "TYPE": "CMD_RESP", "FROM": "SERVER",
@@ -659,8 +660,8 @@ def run_server(port):
                         print(f"[!WARN] {user} timed out (no PONG in {PING_TIMEOUT}s). Disconnecting.")
                         log_event(f"[TIMEOUT] {user} disconnected (no PONG in {PING_TIMEOUT}s)")
                         conn.close()
-                        del active_users[user]
-                        del last_pong[user]
+                        active_users.pop(user, None)
+                        last_pong.pop(user, None)
                 except:
                     pass
 
