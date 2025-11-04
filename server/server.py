@@ -36,13 +36,15 @@ def load_json(path, default): return json.load(open(path)) if os.path.exists(pat
 def save_json(path, data): json.dump(data, open(path, "w"), indent=4)
 
 def log_event(message):
-    """Append timestamped messages to today's log file."""
+    """Append timestamped messages to today's log file. (thread safety added)"""
     date = datetime.now().strftime("%Y-%m-%d")
     time_str = datetime.now().strftime("%H:%M:%S")
     log_path = os.path.join(LOG_DIR, f"{date}.log")
+    line = f"[{time_str}] {message}\n"
 
-    with open(log_path, "a", encoding="utf-8") as f:
-        f.write(f"[{time_str}] {message}\n")
+    with log_lock:  # ensure only one thread writes at a time
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(line)
 
 # ---------- GLOBALS ----------
 active_users = {}    # {username: conn}
@@ -51,6 +53,7 @@ muted_users = {}     # {username: unmute_time (epoch)}
 banned_users = {}    # {username: unban_time}
 BAN_DURATION = 10 * 60  # 10 minutes in seconds
 connected_since = {}  # {username: timestamp}
+log_lock = threading.Lock()
 
 # ---------- SETUP ----------
 def setup_server():
