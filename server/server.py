@@ -1,5 +1,26 @@
 import socket, threading, json, os, hashlib, time
 
+# ---------- LANTP HELPERS ----------
+def encode_lantp(data):
+    lines = ["LANTP/1.0"]
+    for k, v in data.items():
+        lines.append(f"{k}: {v}")
+    lines.append("<END>")
+    return "\n".join(lines) + "\n"
+
+def decode_lantp(packet):
+    lines = packet.strip().split("\n")
+    if not lines or not lines[0].startswith("LANTP/1.0"):
+        return None
+    data = {}
+    for line in lines[1:]:
+        if line.strip() == "<END>":
+            break
+        if ": " in line:
+            k, v = line.split(": ", 1)
+            data[k] = v
+    return data
+
 # ---------- PATHS ----------
 DATA_DIR = "server_data"
 CONFIG_PATH = os.path.join(DATA_DIR, "server_config.json")
@@ -17,6 +38,7 @@ user_roles = {}      # {username: role}
 muted_users = {}     # {username: unmute_time (epoch)}
 banned_users = {}    # {username: unban_time}
 BAN_DURATION = 10 * 60  # 10 minutes in seconds
+connected_since = {}  # {username: timestamp}
 
 # ---------- SETUP ----------
 def setup_server():
@@ -46,72 +68,108 @@ def admin_login():
         print("❌ Invalid credentials.\n")
 
 # ---------- BROADCAST ----------
-def broadcast(msg, sender_conn=None):
+def broadcast(data, sender_conn=None):
+    packet = encode_lantp(data)
     for user, conn in list(active_users.items()):
         if conn != sender_conn:
             try:
-                conn.send(msg.encode())
+                conn.send(packet.encode("utf-8"))
             except:
                 active_users.pop(user, None)
 
 # ---------- CLIENT HANDLER ----------
 def handle_client(conn, addr):
+    buffer = ""
+    username, role = None, "user"
     users = load_json(USERS_PATH, {})
     pending = load_json(PENDING_PATH, {})
-    conn.send(b"Welcome to the LAN Chat Server.\nType SIGNUP or LOGIN\n")
 
-    username = None
-    role = "user"
+    conn.send(encode_lantp({
+        "TYPE": "SYS", "FROM": "SERVER",
+        "CONTENT": "Welcome to the LAN Chat Server.\nType SIGNUP or LOGIN\n"
+    }).encode())
 
     try:
         while True:
             data = conn.recv(1024)
             if not data:
                 break
-            msg = data.decode().strip()
+            buffer += data.decode("utf-8")
+            while "<END>" in buffer:
+                packet, buffer = buffer.split("<END>", 1)
+                packet += "<END>"
+                msg = decode_lantp(packet)
+                if not msg: continue
 
-            if msg.upper().startswith("SIGNUP "):
-                _, user, pw = msg.split(" ", 2)
-                if user in users:
-                    conn.send(b"Username already exists.\n")
-                elif user in pending:
-                    conn.send(b"Signup already pending.\n")
-                else:
-                    pending[user] = {"password": hash_pw(pw)}
-                    save_json(PENDING_PATH, pending)
-                    conn.send(b"Signup submitted. Wait for admin approval, then try LOGIN.\n")
-                continue
+                text = msg.get("CONTENT", "").strip()
 
-            elif msg.upper().startswith("LOGIN "):
-                _, user, pw = msg.split(" ", 2)
+                # ---------- SIGNUP ----------
+                if text.upper().startswith("SIGNUP "):
+                    _, user, pw = text.split(" ", 2)
+                    if user in users:
+                        conn.send(encode_lantp({
+                            "TYPE": "SYS", "FROM": "SERVER",
+                            "CONTENT": "Username already exists.\n"
+                        }).encode())
+                    elif user in pending:
+                        conn.send(encode_lantp({
+                            "TYPE": "SYS", "FROM": "SERVER",
+                            "CONTENT": "Signup already pending.\n"
+                        }).encode())
+                    else:
+                        pending[user] = {"password": hash_pw(pw)}
+                        save_json(PENDING_PATH, pending)
+                        conn.send(encode_lantp({
+                            "TYPE": "SYS", "FROM": "SERVER",
+                            "CONTENT": "Signup submitted. Wait for admin approval, then try LOGIN.\n"
+                        }).encode())
+                    continue
 
-                # --- 🔒 Temporary ban check ---
+                # ---------- LOGIN ----------
                 if user in banned_users:
                     if time.time() < banned_users[user]:
                         remaining = int((banned_users[user] - time.time()) // 60) + 1
-                        conn.send(f"🚫 You are temporarily banned. Try again in {remaining} minute(s).\n".encode("utf-8"))
+                        conn.send(encode_lantp({
+                            "TYPE": "SYS", "FROM": "SERVER",
+                            "CONTENT": f"🚫 You are temporarily banned. Try again in {remaining} minute(s).\n"
+                        }).encode("utf-8"))
                         conn.close()
                         return
                     else:
-                        banned_users.pop(user, None)  # ban expired, allow login
+                        # ban expired -> remove and continue with auth
+                        banned_users.pop(user, None)
 
-                users = load_json(USERS_PATH, {})
-                if user not in users or users[user]["password"] != hash_pw(pw):
-                    conn.send(b"Invalid credentials or user not approved.\n")
-                elif user in active_users:
-                    conn.send(b"User already logged in elsewhere.\n")
+                    users = load_json(USERS_PATH, {})
+                    if user not in users or users[user]["password"] != hash_pw(pw):
+                        conn.send(encode_lantp({
+                            "TYPE": "AUTH_FAIL", "FROM": "SERVER",
+                            "CONTENT": "Invalid credentials or user not approved.\n"
+                        }).encode("utf-8"))
+                    elif user in active_users:
+                        conn.send(encode_lantp({
+                            "TYPE": "AUTH_FAIL", "FROM": "SERVER",
+                            "CONTENT": "User already logged in elsewhere.\n"
+                        }).encode("utf-8"))
+                    else:
+                        username, role = user, users[user]["role"]
+                        active_users[user] = conn
+                        user_roles[user] = role
+                        connected_since[user] = time.time()
+                        tag = "[Admin] " if role == "admin" else ""
+                        conn.send(encode_lantp({
+                            "TYPE": "AUTH_OK", "FROM": "SERVER",
+                            "CONTENT": f"✅ Logged in as {tag}{user}. You can now chat.\n"
+                        }).encode("utf-8"))
+                        broadcast({
+                            "TYPE": "SYS", "FROM": "SERVER",
+                            "CONTENT": f"📢 {tag}{user} joined the chat.\n"
+                        }, conn)
+                        break
                 else:
-                    username = user
-                    role = users[user]["role"]
-                    active_users[user] = conn
-                    user_roles[user] = role
-                    tag = "[Admin] " if role == "admin" else ""
-                    conn.send(f"✅ Logged in as {tag}{user}. You can now chat.\n".encode())
-                    broadcast(f"📢 {tag}{user} joined the chat.\n", conn)
-                    break
-            else:
-                conn.send(b"Unknown command. Use SIGNUP or LOGIN.\n")
-
+                    conn.send(encode_lantp({
+                        "TYPE": "SYS", "FROM": "SERVER",
+                        "CONTENT": "Unknown command. Use SIGNUP or LOGIN\n"
+                    }).encode("utf-8"))
     except:
         pass
 
@@ -119,160 +177,302 @@ def handle_client(conn, addr):
         conn.close()
         return
 
-    # chat loop
+    # ---------- CHAT LOOP ----------
     try:
         while True:
-            msg = conn.recv(1024)
-            if not msg:
+            data = conn.recv(1024)
+            if not data:
                 break
-            text = msg.decode().strip()
+            buffer += data.decode("utf-8")
+            while "<END>" in buffer:
+                packet, buffer = buffer.split("<END>", 1)
+                packet += "<END>"
+                msg = decode_lantp(packet)
+                if not msg: continue
+                text = msg.get("CONTENT", "").strip()
 
-            # check mute expiration
-            if username in muted_users and time.time() < muted_users[username]:
-                conn.send("🚫 You are muted.\n".encode("utf-8"))
-                continue
-            elif username in muted_users and time.time() >= muted_users[username]:
-                del muted_users[username]
-                conn.send("✅ You have been unmuted.\n".encode("utf-8"))
-
-            # --- Command handling ---
-            if text == "/help":
-                help_text = (
-                    "\nAvailable commands:\n"
-                    "  /help - show this message\n"
-                    "  /users - list online users\n"
-                    "  @username <msg> - private message\n"
-                    "  exit - disconnect\n"
-                )
-                if role == "admin":
-                    help_text += (
-                        "  /kick <user> - disconnect user\n"
-                        "  /mute <user> <minutes> - mute user (default 5m)\n"
+                # check mute
+                if username in muted_users:
+                    if time.time() < muted_users[username]:
+                        conn.send(encode_lantp({
+                            "TYPE": "SYS", "FROM": "SERVER",
+                            "CONTENT": "🚫 You are muted.\n"
+                        }).encode("utf-8"))
+                        continue
+                    else:
+                        # mute expired -> remove and notify the user
+                        muted_users.pop(username, None)
+                        conn.send(encode_lantp({
+                            "TYPE": "SYS", "FROM": "SERVER",
+                            "CONTENT": "✅ You have been unmuted.\n"
+                        }).encode("utf-8"))
+                        # continue processing the message (do not do continue here)
+                
+                # --- Command handling ---
+                if text == "/help":
+                    help_text = (
+                        "\n📘 Available commands:\n"
+                        "  /help - show this message\n"
+                        "  /users - list online users\n"
+                        "  @username <msg> - private message\n"
+                        "  exit - disconnect\n"
                     )
-                help_text += "\n"
-                conn.send(help_text.encode())
-                continue
+                    if role == "admin":
+                        help_text += (
+                            "  /kick <user> [reason] - disconnect user (10-min ban)\n"
+                            "  /mute <user> <minutes> - mute user (default 5m)\n"
+                            "  /unmute <user> - unmute a user\n"
+                            "  /unban <user> - remove ban early\n"
+                        )
+                    help_text += "\n"
 
-            elif text == "/users":
-                users_list = ", ".join(active_users.keys()) or "(none)"
-                conn.send(f"Online users: {users_list}\n".encode())
-                continue
-
-            elif text.startswith("@"):
-                parts = text.split(" ", 1)
-                if len(parts) < 2:
-                    conn.send(b"Usage: @username <message>\n")
+                    conn.send(encode_lantp({
+                        "TYPE": "CMD_RESP",
+                        "FROM": "SERVER",
+                        "CONTENT": help_text
+                    }).encode("utf-8"))
                     continue
-                target, pm = parts
-                target = target[1:]
-                if target not in active_users:
-                    conn.send(b"User not found.\n")
-                else:
-                    prefix = "[PM] "
+
+                elif text == "/users":
+                    users_list = "\n".join([
+                        f"  - {u} {'[Admin]' if user_roles.get(u) == 'admin' else ''}"
+                        for u in active_users.keys()
+                    ]) or "  (none)"
+                    conn.send(encode_lantp({
+                        "TYPE": "CMD_RESP",
+                        "FROM": "SERVER",
+                        "CONTENT": f"👥 Online users:\n  {users_list}\n"
+                    }).encode("utf-8"))
+                    continue
+
+                elif text.startswith("@"):
+                    parts = text.split(" ", 1)
+                    if len(parts) < 2:
+                        conn.send(encode_lantp({
+                            "TYPE": "CMD_RESP",
+                            "FROM": "SERVER",
+                            "CONTENT": "Usage: @username <message>\n"
+                        }).encode("utf-8"))
+                        continue
+
+                    target, pm = parts
+                    target = target[1:]
+                    if target not in active_users:
+                        conn.send(encode_lantp({
+                            "TYPE": "CMD_RESP",
+                            "FROM": "SERVER",
+                            "CONTENT": f"User '{target}' not found or offline.\n"
+                        }).encode("utf-8"))
+                        continue
+
                     tag = "[Admin] " if role == "admin" else ""
-                    active_users[target].send(f"{prefix}{tag}{username}: {pm}\n".encode())
-                    conn.send(f"{prefix}to {target}: {pm}\n".encode())
-                continue
+                    # message for target user
+                    active_users[target].send(encode_lantp({
+                        "TYPE": "MSG",
+                        "FROM": username,
+                        "TO": target,
+                        "CONTENT": f"[PM] {tag}{username}: {pm}"
+                    }).encode("utf-8"))
 
-            # --- Admin: Kick (adds temporary ban) ---
-            elif text.startswith("/kick "):
-                if role != "admin":
-                    conn.send("🚫 Permission denied.\n".encode("utf-8"))
+                    # confirmation back to sender
+                    conn.send(encode_lantp({
+                        "TYPE": "CMD_RESP",
+                        "FROM": "SERVER",
+                        "CONTENT": f"[PM → {target}]: {pm}\n"
+                    }).encode("utf-8"))
                     continue
-                parts = text.split(" ", 2)
-                if len(parts) < 2:
-                    conn.send(b"Usage: /kick <username> [reason]\n")
-                    continue
-                target = parts[1]
-                reason = parts[2] if len(parts) > 2 else "No reason given"
-                if target not in active_users:
-                    conn.send(b"User not found or offline.\n")
-                    continue
-                try:
-                    active_users[target].send(f"⚠️ You have been kicked by an admin. Reason: {reason}\n".encode("utf-8"))
-                    active_users[target].close()
-                except:
-                    pass
-                active_users.pop(target, None)
-                user_roles.pop(target, None)
-                banned_users[target] = time.time() + BAN_DURATION
-                broadcast(f"🚨 {target} was kicked and temporarily banned (10 min) by an admin. (Reason: {reason})\n")
-                conn.send(f"✅ {target} has been kicked and banned for 10 minutes.\n".encode("utf-8"))
-                print(f"[Admin Action] {username} kicked {target} (Reason: {reason})")
-                continue
 
-             # --- Admin: Mute ---
-            elif text.startswith("/mute "):
-                if role != "admin":
-                    conn.send("🚫 Permission denied.\n".encode("utf-8"))
+
+                # --- Admin: Kick (adds temporary ban) ---
+                elif text.startswith("/kick "):
+                    if role != "admin":
+                        conn.send(encode_lantp({
+                            "TYPE": "CMD_RESP", "FROM": "SERVER",
+                            "CONTENT": "🚫 Permission denied.\n"
+                        }).encode("utf-8"))
+                        continue
+
+                    parts = text.split(" ", 2)
+                    if len(parts) < 2:
+                        conn.send(encode_lantp({
+                            "TYPE": "CMD_RESP", "FROM": "SERVER",
+                            "CONTENT": "Usage: /kick <username> [reason]\n"
+                        }).encode("utf-8"))
+                        continue
+
+                    target = parts[1]
+                    reason = parts[2] if len(parts) > 2 else "No reason given"
+                    if target not in active_users:
+                        conn.send(encode_lantp({
+                            "TYPE": "CMD_RESP", "FROM": "SERVER",
+                            "CONTENT": "User not found or offline.\n"
+                        }).encode("utf-8"))
+                        continue
+
+                    try:
+                        active_users[target].send(encode_lantp({
+                            "TYPE": "SYS", "FROM": "SERVER",
+                            "CONTENT": f"⚠️ You have been kicked by an admin. Reason: {reason}"
+                        }).encode("utf-8"))
+                        active_users[target].close()
+                    except:
+                        pass
+
+                    active_users.pop(target, None)
+                    user_roles.pop(target, None)
+                    banned_users[target] = time.time() + BAN_DURATION
+
+                    broadcast({
+                        "TYPE": "SYS", "FROM": "SERVER",
+                        "CONTENT": f"🚨 {target} was kicked and temporarily banned (10 min) by an admin. (Reason: {reason})"
+                    })
+                    conn.send(encode_lantp({
+                        "TYPE": "CMD_RESP", "FROM": "SERVER",
+                        "CONTENT": f"✅ {target} has been kicked and banned for 10 minutes.\n"
+                    }).encode("utf-8"))
+                    print(f"[Admin Action] {username} kicked {target} (Reason: {reason})")
                     continue
-                parts = text.split()
-                if len(parts) < 2:
-                    conn.send(b"Usage: /mute <user> <minutes>\n")
-                    continue
-                target = parts[1]
-                duration = int(parts[2]) if len(parts) > 2 else 2
-                if target not in active_users:
-                    conn.send(b"User not found or offline.\n")
-                else:
+
+                # --- Admin: Mute ---
+                elif text.startswith("/mute "):
+                    if role != "admin":
+                        conn.send(encode_lantp({
+                            "TYPE": "CMD_RESP", "FROM": "SERVER",
+                            "CONTENT": "🚫 Permission denied.\n"
+                        }).encode("utf-8"))
+                        continue
+
+                    parts = text.split()
+                    if len(parts) < 2:
+                        conn.send(encode_lantp({
+                            "TYPE": "CMD_RESP", "FROM": "SERVER",
+                            "CONTENT": "Usage: /mute <user> <minutes>\n"
+                        }).encode("utf-8"))
+                        continue
+
+                    target = parts[1]
+                    duration = int(parts[2]) if len(parts) > 2 else 2
+                    if target not in active_users:
+                        conn.send(encode_lantp({
+                            "TYPE": "CMD_RESP", "FROM": "SERVER",
+                            "CONTENT": "User not found or offline.\n"
+                        }).encode("utf-8"))
+                        continue
+
                     muted_users[target] = time.time() + (duration * 60)
-                    active_users[target].send(f"🔇 You have been muted for {duration} minute(s).\n".encode())
-                    broadcast(f"🔇 {target} was muted by an admin for {duration} minute(s).\n")
+                    active_users[target].send(encode_lantp({
+                        "TYPE": "SYS", "FROM": "SERVER",
+                        "CONTENT": f"🔇 You have been muted for {duration} minute(s)."
+                    }).encode("utf-8"))
+                    broadcast({
+                        "TYPE": "SYS", "FROM": "SERVER",
+                        "CONTENT": f"🔇 {target} was muted by an admin for {duration} minute(s)."
+                    })
                     print(f"[Admin Action] {username} muted {target} for {duration}m")
-                continue
+                    continue
 
-            # --- Admin: Unmute ---
-            elif text.startswith("/unmute "):
-                if role != "admin":
-                    conn.send("🚫 Permission denied.\n".encode("utf-8"))
-                    continue
-                parts = text.split()
-                if len(parts) < 2:
-                    conn.send(b"Usage: /unmute <user>\n".encode())
-                    continue
-                target = parts[1]
-                if target in muted_users:
-                    muted_users.pop(target, None)
-                    conn.send(f"✅ {target} has been unmuted.\n".encode())
-                    if target in active_users:
-                        active_users[target].send("🔊 You have been unmuted by an admin.\n".encode("utf-8"))
-                    broadcast(f"🔊 {target} was unmuted by an admin.\n")
-                    print(f"[Admin Action] {username} unmuted {target}")
-                else:
-                    conn.send("User is not muted.\n".encode())
-                continue
 
-             # --- Admin: Unban ---
-            elif text.startswith("/unban "):
-                if role != "admin":
-                    conn.send("🚫 Permission denied.\n".encode("utf-8"))
-                    continue
-                parts = text.split()
-                if len(parts) < 2:
-                    conn.send("Usage: /unban <user>\n".encode())
-                    continue
-                target = parts[1]
-                if target in banned_users:
-                    banned_users.pop(target, None)
-                    conn.send(f"✅ {target} has been unbanned.\n".encode())
-                    print(f"[Admin Action] {username} unbanned {target}")
-                else:
-                    conn.send("User is not banned.\n".encode())
-                continue
+                # --- Admin: Unmute ---
+                elif text.startswith("/unmute "):
+                    if role != "admin":
+                        conn.send(encode_lantp({
+                            "TYPE": "CMD_RESP", "FROM": "SERVER",
+                            "CONTENT": "🚫 Permission denied.\n"
+                        }).encode("utf-8"))
+                        continue
 
-            else:
+                    parts = text.split()
+                    if len(parts) < 2:
+                        conn.send(encode_lantp({
+                            "TYPE": "CMD_RESP", "FROM": "SERVER",
+                            "CONTENT": "Usage: /unmute <user>\n"
+                        }).encode("utf-8"))
+                        continue
+
+                    target = parts[1]
+                    if target in muted_users:
+                        muted_users.pop(target, None)
+                        conn.send(encode_lantp({
+                            "TYPE": "CMD_RESP", "FROM": "SERVER",
+                            "CONTENT": f"✅ {target} has been unmuted.\n"
+                        }).encode("utf-8"))
+
+                        if target in active_users:
+                            active_users[target].send(encode_lantp({
+                                "TYPE": "SYS", "FROM": "SERVER",
+                                "CONTENT": "🔊 You have been unmuted by an admin."
+                            }).encode("utf-8"))
+
+                        broadcast({
+                            "TYPE": "SYS", "FROM": "SERVER",
+                            "CONTENT": f"🔊 {target} was unmuted by an admin."
+                        })
+                        print(f"[Admin Action] {username} unmuted {target}")
+                    else:
+                        conn.send(encode_lantp({
+                            "TYPE": "CMD_RESP", "FROM": "SERVER",
+                            "CONTENT": "User is not muted.\n"
+                        }).encode("utf-8"))
+                    continue
+
+
+                # --- Admin: Unban ---
+                elif text.startswith("/unban "):
+                    if role != "admin":
+                        conn.send(encode_lantp({
+                            "TYPE": "CMD_RESP", "FROM": "SERVER",
+                            "CONTENT": "🚫 Permission denied.\n"
+                        }).encode("utf-8"))
+                        continue
+
+                    parts = text.split()
+                    if len(parts) < 2:
+                        conn.send(encode_lantp({
+                            "TYPE": "CMD_RESP", "FROM": "SERVER",
+                            "CONTENT": "Usage: /unban <user>\n"
+                        }).encode("utf-8"))
+                        continue
+
+                    target = parts[1]
+                    if target in banned_users:
+                        banned_users.pop(target, None)
+                        conn.send(encode_lantp({
+                            "TYPE": "CMD_RESP", "FROM": "SERVER",
+                            "CONTENT": f"✅ {target} has been unbanned.\n"
+                        }).encode("utf-8"))
+                        print(f"[Admin Action] {username} unbanned {target}")
+                    else:
+                        conn.send(encode_lantp({
+                            "TYPE": "CMD_RESP", "FROM": "SERVER",
+                            "CONTENT": "User is not banned.\n"
+                        }).encode("utf-8"))
+                    continue
+
+                # broadcast messages
                 tag = "[Admin] " if role == "admin" else ""
-                broadcast(f"{tag}{username}: {text}\n", conn)
-
+                broadcast({
+                    "TYPE": "MSG", "FROM": username,
+                    "CONTENT": f"{tag}{username}: {text}"
+                }, conn)
     except:
         pass
     finally:
         conn.close()
         if username:
+            # Clean up user tracking
             active_users.pop(username, None)
             user_roles.pop(username, None)
+
+            # Determine admin tag (for display)
             tag = "[Admin] " if role == "admin" else ""
-            broadcast(f"📤 {tag}{username} left the chat.\n", conn)
+
+            # Broadcast LANTP system message to others
+            broadcast({
+                "TYPE": "SYS",
+                "FROM": "SERVER",
+                "CONTENT": f"📤 {tag}{username} left the chat."
+            })
+
 
 # ---------- SERVER ----------
 def run_server(port):
@@ -280,12 +480,22 @@ def run_server(port):
     server.bind(("0.0.0.0", port))
     server.listen(5)
     server.settimeout(1.0)
-    print(f"🚀 Server running on port {port}. Ctrl+C to stop.")
+    print(f"🚀 LANTP/1.0 Server running on port {port}. Ctrl+C to stop.")
     print("💻 Admin commands: list_pending | approve <u> | reject <u> | announce <msg> | exit\n")
 
+        # --- Admin console thread ---
     def admin_console():
         while True:
-            cmd = input("admin> ").strip()
+            raw = input("admin> ").strip()
+            if not raw:
+                continue
+
+            # Separate command from arguments
+            parts = raw.split(" ", 1)
+            cmd = parts[0].lower()          # command is case-insensitive
+            args = parts[1] if len(parts) > 1 else ""
+
+            # --- List pending signups ---
             if cmd == "list_pending":
                 pending = load_json(PENDING_PATH, {})
                 if not pending:
@@ -294,8 +504,10 @@ def run_server(port):
                     print("Pending signups:")
                     for u in pending:
                         print("  -", u)
-            elif cmd.startswith("approve "):
-                u = cmd.split(" ", 1)[1]
+
+            # --- Approve a pending user ---
+            elif cmd == "approve":
+                u = args.strip()
                 users = load_json(USERS_PATH, {})
                 pending = load_json(PENDING_PATH, {})
                 if u in pending:
@@ -306,8 +518,10 @@ def run_server(port):
                     print(f"✅ Approved {u}.")
                 else:
                     print("No such pending user.")
-            elif cmd.startswith("reject "):
-                u = cmd.split(" ", 1)[1]
+
+            # --- Reject a pending user ---
+            elif cmd == "reject":
+                u = args.strip()
                 pending = load_json(PENDING_PATH, {})
                 if u in pending:
                     del pending[u]
@@ -315,18 +529,32 @@ def run_server(port):
                     print(f"❌ Rejected {u}.")
                 else:
                     print("No such pending user.")
-            elif cmd.startswith("announce "):
-                msg = cmd.split(" ", 1)[1]
-                announcement = f"[Server Announcement] {msg}\n"
-                print(announcement.strip())
+
+            # --- Admin broadcast announcement ---
+            elif cmd == "announce":
+                msg = args.strip()
+                if not msg:
+                    print("Usage: announce <message>")
+                    continue
+                announcement = encode_lantp({
+                    "TYPE": "SYS",
+                    "FROM": "SERVER",
+                    "CONTENT": f"[Server Announcement] {msg}"
+                })
+                print(f"📢 {msg}")
                 broadcast(announcement)
+
+            # --- Exit server ---
             elif cmd == "exit":
+                print("🛑 Server shutting down...")
                 os._exit(0)
+
             else:
                 print("Unknown command.")
 
     threading.Thread(target=admin_console, daemon=True).start()
 
+    # --- Main connection acceptor loop ---
     try:
         while True:
             try:
@@ -339,6 +567,7 @@ def run_server(port):
     finally:
         server.close()
         print("✅ Server closed cleanly.")
+
 
 # ---------- MAIN ----------
 if __name__ == "__main__":
