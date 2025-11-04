@@ -1,5 +1,5 @@
 import socket, threading, time, sys
-
+stop_threads = False
 # ---------- LANTP helpers ----------
 def encode_lantp(data):
     lines = ["LANTP/1.0"]
@@ -40,8 +40,9 @@ def decode_lantp(packet):
 
 # ---------- Receiver thread ----------
 def recv_msgs(sock, auth_state):
+    global stop_threads
     buffer = ""
-    while True:
+    while not stop_threads:
         try:
             data = sock.recv(1024)
             if not data:
@@ -81,7 +82,8 @@ def recv_msgs(sock, auth_state):
                 print("\n💬 [" + mtype + "] " + content)
                 print("> ", end="")
         except Exception as e:
-            print(f"\n[!] Error: {e}")
+            if not stop_threads:
+                print(f"\n[!] Error: {e}")
             break
     try:
         sock.close()
@@ -149,6 +151,7 @@ def main():
             print(f"\n[!] Error: {e}")
             break
 
+    stop_threads = True
     sock.close()
     print("Disconnected.")
 
