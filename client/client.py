@@ -1,6 +1,6 @@
-import socket, threading, sys
+import socket, threading, time, sys
 
-# ---------- LANTP HELPERS ----------
+# ---------- LANTP helpers ----------
 def encode_lantp(data):
     lines = ["LANTP/1.0"]
     for k, v in data.items():
@@ -21,14 +21,15 @@ def decode_lantp(packet):
             data[k] = v
     return data
 
-# ---------- RECEIVE THREAD ----------
-def recv_msgs(sock, username, auth_state):
+
+# ---------- Receiver thread ----------
+def recv_msgs(sock, auth_state):
     buffer = ""
     while True:
         try:
             data = sock.recv(1024)
             if not data:
-                print("\n[!] Server closed the connection.")
+                print("\n[!] Server closed connection.")
                 break
 
             buffer += data.decode("utf-8")
@@ -42,37 +43,28 @@ def recv_msgs(sock, username, auth_state):
                 mtype = msg.get("TYPE")
                 content = msg.get("CONTENT", "")
 
-                # --- Handle heartbeat ---
+                # Handle server PING → respond with PONG
                 if mtype == "PING":
-                    sock.send(encode_lantp({
+                    pong = encode_lantp({
                         "TYPE": "PONG",
-                        "FROM": username,
+                        "FROM": "CLIENT",
                         "CONTENT": ""
-                    }).encode("utf-8"))
+                    })
+                    sock.send(pong.encode("utf-8"))
                     continue
 
-                # --- Handle auth responses ---
+                # Handle login success/failure
                 if mtype == "AUTH_OK":
-                    print(f"\n✅ {content}")
+                    print("\n✅ " + content)
                     auth_state["ok"] = True
-                    print("> ", end="")
                     continue
                 elif mtype == "AUTH_FAIL":
-                    print(f"\n🚫 {content}")
+                    print("\n❌ " + content)
                     continue
 
-                # --- Display message types cleanly ---
-                if mtype == "SYS":
-                    print(f"\n💬 [SYSTEM] {content}")
-                elif mtype == "CMD_RESP":
-                    print(f"\n🧭 {content}")
-                elif mtype == "MSG":
-                    print(f"\n{content}")
-                else:
-                    print(f"\n{content}")
-
+                # Normal display
+                print("\n💬 [" + mtype + "] " + content)
                 print("> ", end="")
-
         except Exception as e:
             print(f"\n[!] Error: {e}")
             break
@@ -82,7 +74,8 @@ def recv_msgs(sock, username, auth_state):
         pass
     sys.exit()
 
-# ---------- MAIN ----------
+
+# ---------- Main ----------
 def main():
     print("=== LANTP Chat Client ===")
     ip = input("Server IP [127.0.0.1]: ") or "127.0.0.1"
@@ -95,51 +88,58 @@ def main():
         print(f"❌ Connection failed: {e}")
         return
 
-    print("✅ Connected to server.")
+    print("✅ Connected to server.\n")
+    print("Available: SIGNUP <user> <pass> | LOGIN <user> <pass>")
+
     auth_state = {"ok": False}
     threading.Thread(target=recv_msgs, args=(sock, auth_state), daemon=True).start()
 
-    # --- AUTH LOOP (SIGNUP or LOGIN) ---
-    print("\nAvailable: SIGNUP <user> <pass> | LOGIN <user> <pass>")
+    # Authentication loop
+    start_time = time.time()
     while not auth_state["ok"]:
         msg = input("> ").strip()
         if not msg:
             continue
-        if msg.lower() == "exit":
-            sock.close()
-            return
+
         packet = encode_lantp({
-            "TYPE": "AUTH",
+            "TYPE": "SYS",          # NOTE: changed from AUTH → SYS
             "FROM": "CLIENT",
             "CONTENT": msg
         })
         sock.send(packet.encode("utf-8"))
-        # wait for AUTH_OK in background thread
-        time_waited = 0
-        while not auth_state["ok"] and time_waited < 5:
-            time_waited += 0.1
 
-    # --- MAIN CHAT LOOP ---
-    try:
-        while True:
+        # Wait a bit for AUTH_OK before continuing
+        waited = 0
+        while not auth_state["ok"] and waited < 5:
+            time.sleep(0.1)
+            waited += 0.1
+
+    # Chat loop
+    print("\n✅ Authenticated. You can now chat! Type /help for commands.\n")
+    while True:
+        try:
             msg = input("> ").strip()
-            if not msg:
-                continue
             if msg.lower() == "exit":
                 break
+            if not msg:
+                continue
+
             packet = encode_lantp({
                 "TYPE": "MSG",
                 "FROM": "CLIENT",
                 "CONTENT": msg
             })
             sock.send(packet.encode("utf-8"))
-    except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
-        print("\n[!] Disconnected from server.")
-    except KeyboardInterrupt:
-        print("\n[!] Keyboard interrupt, exiting.")
-    finally:
-        sock.close()
-        print("Disconnected.")
+        except KeyboardInterrupt:
+            print("\n[!] Interrupted. Exiting.")
+            break
+        except Exception as e:
+            print(f"\n[!] Error: {e}")
+            break
+
+    sock.close()
+    print("Disconnected.")
+
 
 if __name__ == "__main__":
     main()
