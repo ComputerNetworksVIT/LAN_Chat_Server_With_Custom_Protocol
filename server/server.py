@@ -109,45 +109,67 @@ def handle_client(conn, addr):
         "CONTENT": "Welcome to the LAN Chat Server.\nType SIGNUP or LOGIN\n"
     }).encode())
 
+        # ---------- AUTHENTICATION PHASE ----------
     try:
-        while True:
+        auth_done = False
+        while not auth_done:
             data = conn.recv(1024)
             if not data:
                 break
             buffer += data.decode("utf-8")
+
             while "<END>" in buffer:
                 packet, buffer = buffer.split("<END>", 1)
                 packet += "<END>"
                 msg = decode_lantp(packet)
-                if not msg: continue
+                if not msg:
+                    continue
 
                 text = msg.get("CONTENT", "").strip()
 
                 # ---------- SIGNUP ----------
                 if text.upper().startswith("SIGNUP "):
-                    _, user, pw = text.split(" ", 2)
+                    parts = text.split(" ", 2)
+                    if len(parts) < 3:
+                        conn.send(encode_lantp({
+                            "TYPE": "SYS", "FROM": "SERVER",
+                            "CONTENT": "Usage: SIGNUP <user> <pass>\n"
+                        }).encode("utf-8"))
+                        continue
+
+                    _, user, pw = parts
                     if user in users:
                         conn.send(encode_lantp({
                             "TYPE": "SYS", "FROM": "SERVER",
                             "CONTENT": "Username already exists.\n"
-                        }).encode())
+                        }).encode("utf-8"))
                     elif user in pending:
                         conn.send(encode_lantp({
                             "TYPE": "SYS", "FROM": "SERVER",
                             "CONTENT": "Signup already pending.\n"
-                        }).encode())
+                        }).encode("utf-8"))
                     else:
                         pending[user] = {"password": hash_pw(pw)}
                         save_json(PENDING_PATH, pending)
                         conn.send(encode_lantp({
                             "TYPE": "SYS", "FROM": "SERVER",
                             "CONTENT": "Signup submitted. Wait for admin approval, then try LOGIN.\n"
-                        }).encode())
+                        }).encode("utf-8"))
                     continue
 
                 # ---------- LOGIN ----------
                 elif text.upper().startswith("LOGIN "):
-                    _, user, pw = text.split(" ", 2)
+                    parts = text.split(" ", 2)
+                    if len(parts) < 3:
+                        conn.send(encode_lantp({
+                            "TYPE": "SYS", "FROM": "SERVER",
+                            "CONTENT": "Usage: LOGIN <user> <pass>\n"
+                        }).encode("utf-8"))
+                        continue
+
+                    _, user, pw = parts
+
+                    # --- Ban check ---
                     if user in banned_users:
                         if time.time() < banned_users[user]:
                             remaining = int((banned_users[user] - time.time()) // 60) + 1
@@ -158,10 +180,9 @@ def handle_client(conn, addr):
                             conn.close()
                             return
                         else:
-                            # ban expired -> remove and continue with auth
                             banned_users.pop(user, None)
 
-                    # --- Normal auth ---
+                    # --- Normal authentication ---
                     users = load_json(USERS_PATH, {})
                     if user not in users or users[user]["password"] != hash_pw(pw):
                         conn.send(encode_lantp({
@@ -180,22 +201,32 @@ def handle_client(conn, addr):
                         connected_since[user] = time.time()
                         last_pong[user] = time.time()   # initialize heartbeat
                         tag = "[Admin] " if role == "admin" else ""
+
                         conn.send(encode_lantp({
                             "TYPE": "AUTH_OK", "FROM": "SERVER",
                             "CONTENT": f"✅ Logged in as {tag}{user}. You can now chat.\n"
                         }).encode("utf-8"))
+
                         broadcast({
                             "TYPE": "SYS", "FROM": "SERVER",
                             "CONTENT": f"📢 {tag}{user} joined the chat.\n"
                         }, conn)
+
                         log_event(f"{user} ({role}) logged in from {addr[0]}:{addr[1]}")
-                        break
+                        auth_done = True
+                        break  # break inner <END> loop
+
                 else:
                     conn.send(encode_lantp({
                         "TYPE": "SYS", "FROM": "SERVER",
                         "CONTENT": "Unknown command. Use SIGNUP or LOGIN\n"
                     }).encode("utf-8"))
-    except:
+
+            if auth_done:
+                break  # break outer while loop fully
+
+    except Exception as e:
+        print(f"[!] Auth phase error: {e}")
         pass
 
     if not username:
