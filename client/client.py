@@ -22,7 +22,7 @@ def decode_lantp(packet):
     return data
 
 # ---------- RECEIVE THREAD ----------
-def recv_msgs(sock, username):
+def recv_msgs(sock, username, auth_state):
     buffer = ""
     while True:
         try:
@@ -51,6 +51,16 @@ def recv_msgs(sock, username):
                     }).encode("utf-8"))
                     continue
 
+                # --- Handle auth responses ---
+                if mtype == "AUTH_OK":
+                    print(f"\n✅ {content}")
+                    auth_state["ok"] = True
+                    print("> ", end="")
+                    continue
+                elif mtype == "AUTH_FAIL":
+                    print(f"\n🚫 {content}")
+                    continue
+
                 # --- Display message types cleanly ---
                 if mtype == "SYS":
                     print(f"\n💬 [SYSTEM] {content}")
@@ -58,10 +68,6 @@ def recv_msgs(sock, username):
                     print(f"\n🧭 {content}")
                 elif mtype == "MSG":
                     print(f"\n{content}")
-                elif mtype == "AUTH_FAIL":
-                    print(f"\n🚫 {content}")
-                elif mtype == "AUTH_OK":
-                    print(f"\n✅ {content}")
                 else:
                     print(f"\n{content}")
 
@@ -91,9 +97,30 @@ def main():
         return
 
     print("✅ Connected to server.")
-    threading.Thread(target=recv_msgs, args=(sock, username), daemon=True).start()
+    auth_state = {"ok": False}
+    threading.Thread(target=recv_msgs, args=(sock, username, auth_state), daemon=True).start()
 
-    # --- main input loop ---
+    # --- AUTH LOOP (SIGNUP or LOGIN) ---
+    while not auth_state["ok"]:
+        print("\nAvailable: SIGNUP <user> <pass> | LOGIN <user> <pass>")
+        msg = input("> ").strip()
+        if not msg:
+            continue
+        if msg.lower() == "exit":
+            sock.close()
+            return
+        packet = encode_lantp({
+            "TYPE": "AUTH",
+            "FROM": username,
+            "CONTENT": msg
+        })
+        sock.send(packet.encode("utf-8"))
+        # wait for AUTH_OK in background thread
+        time_waited = 0
+        while not auth_state["ok"] and time_waited < 5:
+            time_waited += 0.1
+
+    # --- MAIN CHAT LOOP ---
     try:
         while True:
             msg = input("> ").strip()
