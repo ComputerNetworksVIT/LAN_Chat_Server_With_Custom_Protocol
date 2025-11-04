@@ -1,17 +1,72 @@
-import socket, threading, time, sys
+import socket, threading, sys
 
-def recv_msgs(sock):
-    """Background thread to receive server messages."""
+# ---------- LANTP HELPERS ----------
+def encode_lantp(data):
+    lines = ["LANTP/1.0"]
+    for k, v in data.items():
+        lines.append(f"{k}: {v}")
+    lines.append("<END>")
+    return "\n".join(lines) + "\n"
+
+def decode_lantp(packet):
+    lines = packet.strip().split("\n")
+    if not lines or not lines[0].startswith("LANTP/1.0"):
+        return None
+    data = {}
+    for line in lines[1:]:
+        if line.strip() == "<END>":
+            break
+        if ": " in line:
+            k, v = line.split(": ", 1)
+            data[k] = v
+    return data
+
+# ---------- RECEIVE THREAD ----------
+def recv_msgs(sock, username):
+    buffer = ""
     while True:
         try:
-            msg = sock.recv(1024)
-            if not msg:
+            data = sock.recv(1024)
+            if not data:
                 print("\n[!] Server closed the connection.")
                 break
-            print(msg.decode(), end="")
-        except ConnectionResetError:
-            print("\n[!] Connection reset by server.")
-            break
+
+            buffer += data.decode("utf-8")
+            while "<END>" in buffer:
+                packet, buffer = buffer.split("<END>", 1)
+                packet += "<END>"
+                msg = decode_lantp(packet)
+                if not msg:
+                    continue
+
+                mtype = msg.get("TYPE")
+                content = msg.get("CONTENT", "")
+
+                # --- Handle heartbeat ---
+                if mtype == "PING":
+                    sock.send(encode_lantp({
+                        "TYPE": "PONG",
+                        "FROM": username,
+                        "CONTENT": ""
+                    }).encode("utf-8"))
+                    continue
+
+                # --- Display message types cleanly ---
+                if mtype == "SYS":
+                    print(f"\n💬 [SYSTEM] {content}")
+                elif mtype == "CMD_RESP":
+                    print(f"\n🧭 {content}")
+                elif mtype == "MSG":
+                    print(f"\n{content}")
+                elif mtype == "AUTH_FAIL":
+                    print(f"\n🚫 {content}")
+                elif mtype == "AUTH_OK":
+                    print(f"\n✅ {content}")
+                else:
+                    print(f"\n{content}")
+
+                print("> ", end="")
+
         except Exception as e:
             print(f"\n[!] Error: {e}")
             break
@@ -21,10 +76,12 @@ def recv_msgs(sock):
         pass
     sys.exit()
 
+# ---------- MAIN ----------
 def main():
-    print("=== LAN Chat Client ===")
+    print("=== LANTP Chat Client ===")
     ip = input("Server IP [127.0.0.1]: ") or "127.0.0.1"
     port = int(input("Port [5555]: ") or "5555")
+    username = input("Enter your username: ").strip()
 
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -34,28 +91,29 @@ def main():
         return
 
     print("✅ Connected to server.")
-    threading.Thread(target=recv_msgs, args=(sock,), daemon=True).start()
+    threading.Thread(target=recv_msgs, args=(sock, username), daemon=True).start()
 
-    while True:
-        try:
+    # --- main input loop ---
+    try:
+        while True:
             msg = input("> ").strip()
             if not msg:
                 continue
             if msg.lower() == "exit":
                 break
-            sock.send((msg + "\n").encode())
-        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
-            print("\n[!] Disconnected from server.")
-            break
-        except KeyboardInterrupt:
-            print("\n[!] Keyboard interrupt, exiting.")
-            break
-
-    try:
+            packet = encode_lantp({
+                "TYPE": "MSG",
+                "FROM": username,
+                "CONTENT": msg
+            })
+            sock.send(packet.encode("utf-8"))
+    except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+        print("\n[!] Disconnected from server.")
+    except KeyboardInterrupt:
+        print("\n[!] Keyboard interrupt, exiting.")
+    finally:
         sock.close()
-    except:
-        pass
-    print("Disconnected.")
+        print("Disconnected.")
 
 if __name__ == "__main__":
     main()
