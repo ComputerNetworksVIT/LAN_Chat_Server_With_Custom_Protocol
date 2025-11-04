@@ -87,7 +87,7 @@ def main():
         print(f"❌ Connection failed: {e}")
         return
 
-    print("✅ Connected to server.\n")
+    print("✅ Connected to server.")
     print("Available: SIGNUP <user> <pass> | LOGIN <user> <pass>")
 
     auth_state = {"ok": False}
@@ -107,11 +107,8 @@ def main():
         })
         sock.send(packet.encode("utf-8"))
 
-        # Wait a bit for AUTH_OK before continuing
-        waited = 0
-        while not auth_state["ok"] and waited < 5:
-            time.sleep(0.1)
-            waited += 0.1
+        # Small wait to let AUTH_OK arrive (not needed but eh)
+        time.sleep(0.3)
 
     # Chat loop
     print("\n✅ Authenticated. You can now chat! Type /help for commands.\n")

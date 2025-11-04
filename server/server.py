@@ -138,6 +138,11 @@ def handle_client(conn, addr):
                         continue
 
                     _, user, pw = parts
+
+                    # Reload user data before checking again
+                    users = load_json(USERS_PATH, {})
+                    pending = load_json(PENDING_PATH, {})
+
                     if user in users:
                         conn.send(encode_lantp({
                             "TYPE": "SYS", "FROM": "SERVER",

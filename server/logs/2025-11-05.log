@@ -4,3 +4,9 @@
 [01:03:49] test3 (user) logged in from 127.0.0.1:52572
 [01:05:22] [TIMEOUT] test3 disconnected (no PONG in 90s)
 [01:05:22] test3 (user) disconnected
+[01:31:05] [SERVER ANNOUNCEMENT] Finally?
+[01:36:36] test2 (user) logged in from 127.0.0.1:57809
+[01:36:56] test2: eh
+[01:37:22] test2: resp
+[01:37:57] [PM] test2 -> test2: self msg possible?
+[01:38:12] [PM] test2 -> test2: apparently so
