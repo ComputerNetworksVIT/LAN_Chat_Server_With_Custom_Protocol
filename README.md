@@ -1,145 +1,218 @@
-# LAN_Chat_Server_With_Auth
-24BCE1964 Bashar Mohammad Wakil
+
+# 🌐 **“LANComms-LANTP”**
+
+*A LAN-based chat system with authentication, admin moderation, and a custom transport protocol.*
 
 ---
 
+## 📖 Overview
 
-# 💬 LAN Chat Server with Authentication & Admin Controls
+**LANTP Chat Server** is a multi-user chat system built over a **custom application protocol (LANTP/1.0)** using raw **TCP sockets in Python**.
+It supports **authenticated logins, real-time messaging, and admin moderation tools**, all running on a local network — no external dependencies.
 
-A **real-time LAN chat system** built using **Python sockets**, designed for **authenticated multi-user communication** with **admin moderation tools**.  
-This project is part of a **Computer Networks (CN) course project**, implementing a **custom server-client architecture** that runs purely in the terminal for simplicity and transparency.
-
----
-
-## 🚀 Overview
-
-The **LAN Chat Server** enables multiple users on the same network to chat through a centralized server.  
-Admins can manage connected users through moderation commands such as **kick**, **mute**, **ban**, and **broadcast**, while regular users can chat globally or send **private messages** using `@username`.
-
-The project also lays groundwork for a **custom STP (Simple Transmission Protocol)** layer to standardize packet structures and message handling between server and clients.
+This project was developed as part of a **Computer Networks (CN)** course to demonstrate low-level socket programming, protocol design, and session management.
 
 ---
 
-## ✨ Features
+## 🚀 Key Features
 
-- 🔐 **User Authentication** (username/password)
-- 🧩 **Role System** – Admins and Regular Users
-- 💬 **Global Chat + Private Messaging**
-- 🚫 **Admin Commands**
-  - `/kick <user> [reason]`
-  - `/mute <user> [minutes]`
-  - `/unmute <user>`
-  - `/ban <user> [minutes]`
-  - `/unban <user>`
-  - `/announce <message>` (from server side)
-- 👀 **Active User List** and Join/Leave Notifications
-- 🧵 **Multi-threaded Communication**
-- 🧱 **Console-Based and Lightweight**
-- 🧠 **Extensible Protocol (STP) under development**
+* 🔐 **User Authentication**
+
+  * Signup and admin approval flow
+  * Passwords hashed with SHA-256
+* 🧩 **Custom Protocol – LANTP/1.0**
+
+  * Structured text-based packets
+  * Types: `SYS`, `MSG`, `AUTH_OK`, `AUTH_FAIL`, `CMD_RESP`, `PING`, `PONG`
+* 💬 **Global & Private Messaging**
+
+  * Global chat visible to all users
+  * Private DMs via `@username`
+* ⚙️ **Admin Controls**
+
+  * `/kick`, `/mute`, `/unmute`, `/unban`, `/whois`, `/announce`
+* 🧱 **Threaded Server Architecture**
+
+  * Concurrent client handling
+  * Real-time broadcast updates
+* 📡 **Heartbeat (PING/PONG)**
+
+  * Detects disconnected or frozen clients
+* 🗃️ **Persistent Storage**
+
+  * JSON-based user database, pending signups, and chat logs
+* 🪶 **Lightweight & Pure Python**
+
+  * No frameworks, no dependencies
 
 ---
 
-## 🗂️ Folder Structure
+## ⚙️ Folder Structure
 
 ```
-LAN_Chat_Server_With_Auth/
+LANTP_Chat_Server/
 │
 ├── server/
-│   └── server.py
+│   ├── server.py         # main server logic (LANTP + commands)
+│   ├── server_data/      # config, user data, pending signups
+│   └── logs/             # daily log files
 │
 ├── client/
-│   └── client.py
+│   └── client.py         # terminal-based LANTP client
 │
 └── README.md
-````
-
----
-
-## ⚙️ Installation & Setup
-
-### 🪟 For Windows
-
-1. **Install Python 3.12+**
-
-   * Download from [https://www.python.org/downloads/](https://www.python.org/downloads/)
-   * During installation, check ✅ *“Add Python to PATH”*
-
-2. **Clone the Repository**
-
-   ```bash
-   git clone https://github.com/ComputerNetworksVIT/LAN_Chat_Server_With_Auth.git
-   cd LAN_Chat_Server_With_Auth
-   ```
-
-3. **Run the Server**
-
-   ```bash
-   cd server
-   python server.py
-   ```
-
-4. **Run the Client**
-
-   ```bash
-   cd client
-   python client.py
-   ```
-
----
-
-## 🧠 Command Reference
-
-| Command                  | Description                    | Role  |
-| ------------------------ | ------------------------------ | ----- |
-| `/help`                  | Display all available commands | All   |
-| `/users`                 | List currently online users    | All   |
-| `@username <msg>`        | Send private message           | All   |
-| `/kick <user> [reason]`  | Kick a user from the chat      | Admin |
-| `/mute <user> [minutes]` | Temporarily mute a user        | Admin |
-| `/unmute <user>`         | Remove mute restriction        | Admin |
-| `/ban <user> [minutes]`  | Temporarily ban login          | Admin |
-| `/unban <user>`          | Remove ban restriction         | Admin |
-| `/announce <msg>`       | Send server-wide announcement  | Admin |
-
----
-
-## 🧪 Example Session
-
-```
-[Server] Listening on 0.0.0.0:5000
-📥 User 'alex' joined the chat.
-📥 [Admin] 'root' joined the chat.
-[Admin] root: /mute alex 2
-🔇 alex was muted by an admin for 2 minute(s).
-alex: test
-🚫 You are muted.
 ```
 
 ---
 
-## 🧱 Tech Stack
+## 🧩 LANTP/1.0 – LAN Transmission Protocol
 
-| Component     | Technology        |
-| ------------- | ----------------- |
-| Language      | Python 3          |
-| Networking    | Socket, Threading |
-| Architecture  | Client-Server     |
-| Protocol Plan | STP (custom, WIP) |
+A minimal, human-readable text protocol that structures all communication between the client and server.
+
+### 📦 Packet Format
+
+```
+LANTP/1.0
+TYPE: MSG
+FROM: test_user
+TO: (optional)
+CONTENT: Hello, this is a test message!
+<END>
+```
+🔗 See [`LANTP_SPEC.md`](LANTP_SPEC.md) for full protocol documentation.
+
+### 🔍 Supported Message Types
+
+| Type        | Direction       | Description                                |
+| ----------- | --------------- | ------------------------------------------ |
+| `SYS`       | Server → Client | System messages, joins, leaves, or notices |
+| `MSG`       | Both            | Normal chat messages                       |
+| `AUTH_OK`   | Server → Client | Login success confirmation                 |
+| `AUTH_FAIL` | Server → Client | Authentication failure                     |
+| `CMD_RESP`  | Server → Client | Response to a user command (/help, /users) |
+| `PING/PONG` | Both            | Heartbeat keepalive messages               |
+| `ERR`       | Server → Client | Protocol or logic errors                   |
 
 ---
 
-## 🧩 Future Enhancements
+## 💻 Command Reference
 
-* 📡 Implementation of **STP (Simple Transmission Protocol)** for structured messaging (Custom Protocol)
-* 💾 **Chat Logs** and `/whois` command to check user status
-* 🧠 Persistent storage for user roles and bans
-* 🪟 Optional GUI Client (Tkinter or PyQt)
-* 🔔 Notification system for mentions and PMs
+| Command                  | Description                             | Role  |
+| ------------------------ | --------------------------------------- | ----- |
+| `/help`                  | Show list of available commands         | All   |
+| `/users`                 | List all currently online users         | All   |
+| `@username <msg>`        | Send a private message                  | All   |
+| `/kick <user> [reason]`  | Disconnect user and apply temporary ban | Admin |
+| `/mute <user> [minutes]` | Mute user temporarily                   | Admin |
+| `/unmute <user>`         | Unmute user                             | Admin |
+| `/unban <user>`          | Remove ban early                        | Admin |
+| `/whois <user>`          | Get info: IP, role, uptime              | Admin |
+| `/announce <msg>`        | Broadcast a server-wide announcement    | Admin |
+| `exit`                   | Disconnect from the chat                | All   |
+
+---
+
+## 🧠 Example Interaction
+
+### Client
+
+```
+> LOGIN alex password123
+✅ Authenticated. You can now chat! Type /help for commands.
+
+> /users
+👥 Online users:
+  - alex
+  - root [Admin]
+
+> @root Hello admin!
+[PM → root]: Hello admin!
+```
+
+### Server
+
+```
+🚀 LANTP/1.0 Server running on port 5555
+[Admin Action] root muted alex for 5m
+[Admin Action] root kicked user1 (Reason: spam)
+[TIMEOUT] user2 disconnected (no PONG in 90s)
+```
+
+---
+
+## 🧰 Setup Instructions
+
+### Requirements
+
+* Python 3.10 or later
+* Local network or localhost setup
+
+### Server Setup
+
+```bash
+cd server
+python server.py
+```
+
+* On first launch, you’ll be asked to create an **admin account** and set a **port**.
+* All data will be stored inside `server_data/`.
+
+### Client Setup
+
+```bash
+cd client
+python client.py
+```
+
+* Enter the server’s IP and port.
+* Use `SIGNUP <user> <pass>` to request registration.
+* The admin must approve your signup before `LOGIN` works.
+
+---
+
+## 🧾 Logging
+
+* All system events (logins, commands, disconnects, timeouts) are saved in:
+
+  ```
+  server/logs/YYYY-MM-DD.log
+  ```
+* Example entry:
+
+  ```
+  [12:45:22] root (admin) logged in from 127.0.0.1:52341
+  [12:47:10] [ADMIN] root muted alex for 2m
+  [12:48:33] alex: test message
+  [12:52:14] alex (user) disconnected
+  ```
+
+---
+
+## 🧱 Technical Summary
+
+| Layer        | Technology                     |
+| ------------ | ------------------------------ |
+| Language     | Python 3                       |
+| Transport    | TCP (socket module)            |
+| Architecture | Multi-threaded server / client |
+| Protocol     | LANTP/1.0 (custom text-based)  |
+| Data Storage | JSON                           |
+| Logs         | Per-day text logs              |
+
+---
+
+## 🧩 Future Work
+
+* 🔄 Persistent session recovery after disconnect
+* 🔒 TLS or local encryption for passwords
+* 💾 Optional SQLite backend for user data
+* 🪟 GUI client (Tkinter/PyQt)
+* 📡 LANTP/2.0 draft — structured key–value framing with checksums
 
 ---
 
 ## 👥 Author
 
-Developed by **Bashar Mohammad Wakil 24BCE1964** as part of a Computer Networks (CN) B.Tech project
----
+Developed independantly by **Bashar Mohammad Wakil (24BCE1964)**
+as part of a **Computer Networks B.Tech project (VIT)**
 
